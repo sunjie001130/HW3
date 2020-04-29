@@ -1,0 +1,179 @@
+---
+title: "Final Project"
+author: "Jie Sun"
+date: "4/21/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## import the data
+```{r}
+#install.packages(SASxport) #Install SASxport package for reading xpt file
+#install.packages('VIM') #Install VIM package for plotting missing data patterns
+library(SASxport)
+library(VIM) 
+
+# read data
+BRFSS2018<-read.xport("/Users/jiesun/Downloads/LLCP2018.xpt ")
+
+# drop unnecessary columns
+BRFSS <- BRFSS2018[c("ADSLEEP","EMPLOY1","EXERANY2","MENTHLTH","MARITAL","DRNK3GE5")]
+```
+```{r}
+# Look at missing data patterns using the md.pattern function
+md.pattern(BRFSS, rotate.names=TRUE)
+```
+
+## data management
+```{r}
+# look at variables
+table(BRFSS$ADSLEEP) # number of days have sleep disorder over 2 weeks
+table(BRFSS$EMPLOY1) # employment status
+table(BRFSS$EXERANY2) # exercise in past 30 days (yes or no)
+table(BRFSS$MENTHLTH) # number of days have mental health problems in the past 30 days
+table(BRFSS$MARITAL) # marital status
+table(BRFSS$DRNK3GE5) # alcohol consumption
+
+# recode "don't know", "refused", "blank" to missing values
+BRFSS$ADSLEEP[BRFSS$ADSLEEP > 14 & BRFSS$ADSLEEP !=88] <- NA
+BRFSS$EMPLOY1[BRFSS$EMPLOY1 > 8] <- NA
+BRFSS$EXERANY2[BRFSS$EXERANY2 > 2] <- NA
+BRFSS$MENTHLTH[BRFSS$MENTHLTH > 30 & BRFSS$MENTHLTH !=88] <- NA
+BRFSS$MARITAL[BRFSS$MARITAL > 6] <- NA
+BRFSS$DRNK3GE5[BRFSS$DRNK3GE5 > 76] <- NA
+
+# Look at missing data patterns using the md.pattern function
+md.pattern(BRFSS, rotate.names=TRUE)
+
+# remove missing data
+BRFSS <- BRFSS[!is.na(BRFSS$ADSLEEP), ]
+BRFSS <- BRFSS[!is.na(BRFSS$EMPLOY1), ]
+BRFSS <- BRFSS[!is.na(BRFSS$EXERANY2), ]
+BRFSS <- BRFSS[!is.na(BRFSS$MENTHLTH), ]
+BRFSS <- BRFSS[!is.na(BRFSS$MARITAL), ]
+BRFSS <- BRFSS[!is.na(BRFSS$DRNK3GE5), ]
+
+# recode none(88) to 0 for ADSLEEP and MENTHLTH
+BRFSS$ADSLEEP[BRFSS$ADSLEEP == 88] <- 0
+BRFSS$MENTHLTH[BRFSS$MENTHLTH == 88] <- 0
+
+# recode categorical variables
+BRFSS$EXERANY2<-factor(BRFSS$EXERANY2, levels=c(1:2), labels=c("yes", "no"))
+BRFSS$EMPLOY1_re[BRFSS$EMPLOY1<3] <- 0
+BRFSS$EMPLOY1_re[(BRFSS$EMPLOY1>4 & BRFSS$EMPLOY1<7)] <- 1
+BRFSS$EMPLOY1_re[(BRFSS$EMPLOY1 == 3 | BRFSS$EMPLOY1 == 4 | BRFSS$EMPLOY1 == 7 | BRFSS$EMPLOY1 == 8)] <- 2
+BRFSS$EMPLOY1_re<-factor(BRFSS$EMPLOY1_re, levels=c(0:2), labels=c("employed", "out of work", "student or homemaker"))
+BRFSS$MARITAL_re[BRFSS$MARITAL == 1] <- 0
+BRFSS$MARITAL_re[BRFSS$MARITAL > 1] <- 1
+BRFSS$MARITAL_re<-factor(BRFSS$MARITAL_re, levels=c(0:1), labels=c("married", "single"))
+# Check data
+View(BRFSS)
+
+# Check shape of distribution
+d <- density(BRFSS$ADSLEEP)
+plot(d, xlim=c(0,14))
+hist(BRFSS$ADSLEEP, breaks=c(0,2,4,6,8,10,12,14))
+```
+# descriptive analysis
+```{r}
+table(BRFSS$EMPLOY1_re)
+table(BRFSS$EXERANY2)
+table(BRFSS$MARITAL_re)
+mean(BRFSS$ADSLEEP)
+sd(BRFSS$ADSLEEP)
+mean(BRFSS$MENTHLTH)
+sd(BRFSS$MENTHLTH)
+mean(BRFSS$DRNK3GE5)
+sd(BRFSS$DRNK3GE5)
+```
+
+# run first poisson regression
+```{r}
+# the first model contains physical activity, mental health, and employment status, which are 3 predictors that we're interested
+m1 <- glm(ADSLEEP ~ EXERANY2 + MENTHLTH + EMPLOY1_re, family ="poisson", data = BRFSS)
+summary(m1)
+```
+
+# Cameron and Trivedi (2009) recommended using robust standard errors for the parameter estimates to control for mild violation of the distribution assumption that the variance equals the mean. We use R package sandwich below to obtain the robust standard errors and calculated the p-values accordingly. Together with the p-values, we have also calculated the 95% confidence interval using the parameter estimates and their robust standard errors.
+```{r}
+#install.packages(msm)
+#install.packages(sandwich)
+library(msm)
+library(sandwich)
+cov.m1 <- vcovHC(m1, type="HC0")
+std.err <- sqrt(diag(cov.m1))
+r.est <- cbind(Estimate= coef(m1), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(m1)/std.err), lower.tail=FALSE),
+LL = coef(m1) - 1.96 * std.err,
+UL = coef(m1) + 1.96 * std.err)
+```
+
+# We want to present the regression results as incident rate ratios and their standard errors, together with the confidence interval. To compute the standard error for the incident rate ratios, we use the Delta method. To this end, we make use the function deltamethod implemented in R package msm.
+```{r}
+s <- deltamethod(list(~ exp(x1), ~ exp(x2), ~ exp(x3), ~ exp(x4), ~ exp(x5)), coef(m1), cov.m1)
+# exponentiate old estimates dropping the p values
+rexp.est <- exp(r.est[, -3])
+# replace SEs with estimates for exponentiated coefficients
+rexp.est[, "Robust SE"] <- s
+
+rexp.est
+```
+
+# run second poisson regresson
+```{r}
+# marital status and alcohol usage are included as confounders in this model to be adjusted
+m2 <- glm(ADSLEEP ~ EXERANY2 + MENTHLTH + EMPLOY1_re + MARITAL_re + DRNK3GE5, family ="poisson", data = BRFSS)
+summary(m2)
+
+# calcuate IRR
+cov.m2 <- vcovHC(m2, type="HC0")
+std.err.2 <- sqrt(diag(cov.m2))
+r.est.2 <- cbind(Estimate= coef(m2), "Robust SE" = std.err.2,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(m2)/std.err.2), lower.tail=FALSE),
+LL = coef(m2) - 1.96 * std.err.2,
+UL = coef(m2) + 1.96 * std.err.2)
+
+s2 <- deltamethod(list(~ exp(x1), ~ exp(x2), ~ exp(x3), ~ exp(x4), ~ exp(x5), ~ exp(x6), ~ exp(x7)), coef(m2), cov.m2)
+
+## exponentiate old estimates dropping the p values
+rexp.est.2 <- exp(r.est.2[, -3])
+## replace SEs with estimates for exponentiated coefficients
+rexp.est.2[, "Robust SE"] <- s2
+
+rexp.est.2
+```
+
+# What about overdispersion: Use quasi-poisson to get dispersion parameter
+```{r, eval=FALSE}
+#get overdispersion parameter from model results 
+pr <- residuals(m2,"pearson")
+phi <- sum(pr^2)/df.residual(m2)
+round(c(phi,sqrt(phi)),4) #sqrt of phi is the number that the SEs will be multiplied by to adjust them for overdispersion
+####extra####
+
+## quasi-Poisson to allow the scale parameter to change from 1. Show the dispersion parameter. If the dispersion parameter in quasi-Poisson is >1 we have overdispersion
+model.2q <- glm(ADSLEEP ~ EXERANY2 + MENTHLTH + EMPLOY1_re + MARITAL_re + DRNK3GE5, family = quasipoisson, data = BRFSS)
+summary(model.2q)
+```
+The dispersion parameter in quasi-Poisson is >1, so we have overdispersion.
+We use robust standard errors above, which can correct for SEs overdispersion.
+
+# We can also use negbin to overcome overdispersion 
+```{r, eval=FALSE}
+# Load MASS
+library(MASS)
+# Negative binomial regression
+m2.nb <- glm.nb(ADSLEEP ~ EXERANY2 + MENTHLTH + EMPLOY1_re + MARITAL_re + DRNK3GE5, data = BRFSS)
+summary(m2.nb)
+```
+
+# We can also decide which model is better to use (Poisson vs. negbin by comparing models using the liklihood ratio test)
+```{r, eval=FALSE}
+library(lmtest) #model comparison
+lrtest(m2, m2.nb)
+```
+Since p-value<0.001, negbin model is better to use.
+
